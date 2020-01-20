@@ -81,7 +81,7 @@ void applog(int prio, const char *fmt, ...)
 		va_list ap2;
 		char *buf;
 		int len;
-		
+
 		va_copy(ap2, ap);
 		len = vsnprintf(NULL, 0, fmt, ap2) + 1;
 		va_end(ap2);
@@ -229,7 +229,7 @@ static size_t upload_data_cb(void *ptr, size_t size, size_t nmemb,
 static int seek_data_cb(void *user_data, curl_off_t offset, int origin)
 {
 	struct upload_buffer *ub = user_data;
-	
+
 	switch (origin) {
 	case SEEK_SET:
 		ub->pos = offset;
@@ -857,7 +857,7 @@ bool fulltest(const uint32_t *hash, const uint32_t *target)
 	static int z = 0;
 	int i;
 	bool rc = true;
-	
+
 	for (i = 7; i >= 0; i--) {
 		if (hash[i] > target[i]) {
 			rc = false;
@@ -873,7 +873,7 @@ bool fulltest(const uint32_t *hash, const uint32_t *target)
 		z++;
 		uint32_t hash_be[8], target_be[8];
 		char hash_str[65], target_str[65];
-		
+
 		for (i = 0; i < 8; i++) {
 			be32enc(hash_be + i, hash[7 - i]);
 			be32enc(target_be + i, target[7 - i]);
@@ -898,7 +898,7 @@ void diff_to_target(uint32_t *target, double diff)
 {
 	uint64_t m;
 	int k;
-	
+
 	for (k = 6; k > 0 && diff > 1.0; k--)
 		diff /= 4294967296.0;
 	m = 4294901760.0 / diff;
@@ -920,7 +920,7 @@ void diff_to_target(uint32_t *target, double diff)
 static bool send_line(struct stratum_ctx *sctx, char *s)
 {
 	ssize_t len, sent = 0;
-	
+
 	len = strlen(s);
 	s[len++] = '\n';
 
@@ -1341,7 +1341,7 @@ out:
 
 static bool ConvertHexToBin32(const char *hexstr, void *buf, size_t buflen)
 {
-	if (strlen(hexstr) < buflen) 
+	if (strlen(hexstr) < buflen)
 	{
 		printf("\nhexstr '%s' is not a string", hexstr);
 		return false;
@@ -1365,10 +1365,11 @@ static bool stratum_notify2(struct stratum_ctx *sctx, json_t *params)
 	int merkle_count, i;
 	json_t *merkle_arr;
 	unsigned char **merkle;
-	
+	const char *nPrevBlockTime;
+
 	job_id = json_string_value(json_array_get(params, 0));
 	prevhash = json_string_value(json_array_get(params, 1));
-	
+
 	mining_data = json_string_value(json_array_get(params, 2));
 	coinb2 = json_string_value(json_array_get(params, 3));
 	merkle_arr = json_array_get(params, 4);
@@ -1377,23 +1378,27 @@ static bool stratum_notify2(struct stratum_ctx *sctx, json_t *params)
 	nbits = json_string_value(json_array_get(params, 6));
 	ntime = json_string_value(json_array_get(params, 7));
 	clean = json_is_true(json_array_get(params, 8));
+    nPrevBlockTime = json_string_value(json_array_get(params, 9));
 
 	// From nomp to the miner, via stratum:
 
-	if (!job_id || !version || !nbits || !ntime ||
-	    strlen(version) != 8 || strlen(nbits) != 8 || strlen(ntime) != 8) {
+	if (!job_id || !version || !nbits || !ntime || !nPrevBlockTime ||
+	    strlen(version) != 8 || strlen(nbits) != 8 || strlen(ntime) != 8 || strlen(nPrevBlockTime) != 8) {
 		applog(LOG_ERR, "StratumBBP notify: invalid parameters");
-		printf("jobid %s, version %s, nbits %s, ntime %s\n", job_id, version, nbits, ntime);
+		printf("jobid %s, version %s, nbits %s, ntime %s, nPrevBlockTime %s \n", job_id, version, nbits, ntime, nPrevBlockTime);
 
 		goto out;
 	}
+
+	//printf("\n jobid %s prevblocktime %s ", job_id, nPrevBlockTime);
+
 
 	if (strlen(mining_data) < 100)
 	{
 		applog(LOG_ERR, "Stratum_BBP2 - mining data truncated");
 		goto out;
 	}
-	
+
 	pthread_mutex_lock(&sctx->work_lock);
 
 	free(sctx->block);
@@ -1408,15 +1413,19 @@ static bool stratum_notify2(struct stratum_ctx *sctx, json_t *params)
 
 	free(sctx->job.job_id);
 	sctx->job.job_id = strdup(job_id);
-	
+
 	hex2bin(sctx->job.version, version, 4);
 	hex2bin(sctx->job.nbits, nbits, 4);
 	hex2bin(sctx->job.ntime, ntime, 4);
+    hex2bin(sctx->job.nPrevBlockTime2, nPrevBlockTime, 4);
+
+	sctx->job.nPrevBlockTime = (int)strtol(nPrevBlockTime, NULL, 16);
+	// printf("Noncing %s, %d ", nPrevBlockTime, sctx->job.nPrevBlockTime);
 
 	hex2bin(sctx->job.prevhash, mining_data + 72, 32);
 	sctx->job.clean = clean;
 	sctx->job.diff = sctx->next_diff;
-	
+
 	pthread_mutex_unlock(&sctx->work_lock);
 
 	ret = true;
@@ -1428,7 +1437,7 @@ out:
 
 static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 {
-	const char *job_id, *prevhash, *coinb1, *coinb2, *version, *nbits, *ntime;
+	const char *job_id, *prevhash, *coinb1, *coinb2, *version, *nbits, *ntime, *nPrevBlockTime;
 	size_t coinb1_size, coinb2_size;
 	bool clean, ret = false;
 	int merkle_count, i;
@@ -1447,10 +1456,11 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 	nbits = json_string_value(json_array_get(params, 6));
 	ntime = json_string_value(json_array_get(params, 7));
 	clean = json_is_true(json_array_get(params, 8));
+    nPrevBlockTime = json_string_value(json_array_get(params, 9));
 
-	if (!job_id || !prevhash || !coinb1 || !coinb2 || !version || !nbits || !ntime ||
+	if (!job_id || !prevhash || !coinb1 || !coinb2 || !version || !nbits || !ntime || !nPrevBlockTime ||
 	    strlen(prevhash) != 64 || strlen(version) != 8 ||
-	    strlen(nbits) != 8 || strlen(ntime) != 8) {
+	    strlen(nbits) != 8 || strlen(ntime) != 8 || strlen(nPrevBlockTime) != 8) {
 		applog(LOG_ERR, "Stratum notify: invalid parameters");
 		goto out;
 	}
@@ -1495,6 +1505,10 @@ static bool stratum_notify(struct stratum_ctx *sctx, json_t *params)
 	hex2bin(sctx->job.version, version, 4);
 	hex2bin(sctx->job.nbits, nbits, 4);
 	hex2bin(sctx->job.ntime, ntime, 4);
+	hex2bin(sctx->job.nPrevBlockTime2, nPrevBlockTime, 4);
+	sctx->job.nPrevBlockTime = (int)strtol(nPrevBlockTime, NULL, 16);
+	// printf("  Noncing %s from %d ", sctx->job.nPrevBlockTime2, sctx->job.nPrevBlockTime);
+
 	sctx->job.clean = clean;
 
 	sctx->job.diff = sctx->next_diff;
@@ -1565,7 +1579,7 @@ static bool stratum_get_version(struct stratum_ctx *sctx, json_t *id)
 	char *s;
 	json_t *val;
 	bool ret;
-	
+
 	if (!id || json_is_null(id))
 		return false;
 
@@ -1590,7 +1604,7 @@ static bool stratum_show_message(struct stratum_ctx *sctx, json_t *id, json_t *p
 	val = json_array_get(params, 0);
 	if (val)
 		applog(LOG_NOTICE, "MESSAGE FROM SERVER: %s", json_string_value(val));
-	
+
 	if (!id || json_is_null(id))
 		return true;
 

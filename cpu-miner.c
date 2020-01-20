@@ -9,7 +9,7 @@
  */
 
 #define _GNU_SOURCE
- 
+
 #include "kjv.h"
 
 #include "cpuminer-config.h"
@@ -118,7 +118,7 @@ static const char *algo_names[] = {
 	[ALGO_SHA256D]		= "sha256d",
 };
 
-int BBP_VERSION = 1009;
+int BBP_VERSION = 1011;
 bool fSolo = false;
 bool fDebug = false;
 bool opt_debug = false;
@@ -270,6 +270,7 @@ struct work {
 	// initial work structure
 	uint32_t data[32];
 	uint32_t target[8];
+	int nPrevBlockTime;
 	int height;
 	char *txs;
 	char *workid;
@@ -314,7 +315,7 @@ static inline void work_copy(struct work *dest, const struct work *src)
 
 static bool ConvertHexToBin32(const char *hexstr, void *buf, size_t buflen)
 {
-	if (strlen(hexstr) < buflen) 
+	if (strlen(hexstr) < buflen)
 	{
 		printf("\nhexstr '%s' is not a string", hexstr);
 		return false;
@@ -358,7 +359,7 @@ static bool jobj_binary(const json_t *obj, const char *key,
 static bool work_decode2(const json_t *val, struct work *work)
 {
 	// Solo mining and received new getblockforstratum
-	
+
 	int i;
 	uint32_t target[8];
 
@@ -375,18 +376,26 @@ static bool work_decode2(const json_t *val, struct work *work)
 		goto err_out;
 	}
 
-	if (strlen(hexstr) < 160) 
+	if (strlen(hexstr) < 160)
 	{
 		printf("\njson invalid data-empty hex-bbp2\n");
 		applog(LOG_ERR, "JSON invalid data-empty hex-bbp2 %s", hexstr);
 		goto err_out;
 	}
 
-	if (unlikely(!jobj_binary(val, "target", target, sizeof(target)))) 
+	if (unlikely(!jobj_binary(val, "target", target, sizeof(target))))
 	{
 		applog(LOG_ERR, "JSON invalid target");
 		goto err_out;
 	}
+
+	tmp = json_object_get(val, "prevblocktime");
+	if (!tmp || !json_is_integer(tmp))
+	{
+		applog(LOG_ERR, "JSON invalid previous block time");
+		goto err_out;
+	}
+	work->nPrevBlockTime = json_integer_value(tmp);
 
 	free(work->block);
 	work->block = calloc(strlen(hexstr) + 128, 1);
@@ -410,11 +419,14 @@ static bool work_decode2(const json_t *val, struct work *work)
 	}
 
 	if (fDebug)
+	{
 		printf("[hashing] [%s] \n", hexstr);
+		printf("Prevblocktime %d ", work->nPrevBlockTime);
+	}
 
 	for (i = 0; i < ARRAY_SIZE(work->target); i++)
 		work->target[7 - i] = be32dec(target + i);
-	
+
 	uint32_t hash[8] __attribute__((aligned(128)));
 	uint32_t endiandata[20] __attribute__((aligned(128)));
 
@@ -434,13 +446,13 @@ err_out:
 
 static void stratum_gen_work2(struct stratum_ctx *sctx, struct work *work)
 {
-	// Received new stratum work 
+	// Received new stratum work
 
 	pthread_mutex_lock(&sctx->work_lock);
 
 	free(work->job_id);
 	work->job_id = strdup(sctx->job.job_id);
-	
+
 	if (strlen(sctx->block) < 160)
 	{
 		printf("\nError in stratum-gen-work2; poolhex too short\n");
@@ -474,6 +486,7 @@ static void stratum_gen_work2(struct stratum_ctx *sctx, struct work *work)
 	}
 
 	diff_to_target(work->target, sctx->job.diff);
+    work->nPrevBlockTime = sctx->job.nPrevBlockTime;
 
 	uint32_t hash[8] __attribute__((aligned(128)));
 	uint32_t endiandata[20] __attribute__((aligned(128)));
@@ -487,11 +500,11 @@ static void stratum_gen_work2(struct stratum_ctx *sctx, struct work *work)
 
 	pthread_mutex_unlock(&sctx->work_lock);
 
-	if (opt_debug) 
+	if (opt_debug)
 	{
 		applog(LOG_DEBUG, "\nBBP-DEBUG: job_id='%s' ntime=%08x, bits=%08x, target=%08x, hex=%s  \n",
 		       work->job_id, swab32(work->data[17]), swab32(work->data[18]), work->target, work->block);
-		
+
 	}
 }
 
@@ -615,7 +628,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 
 	/* build coinbase transaction */
 	tmp = json_object_get(val, "coinbasetxn");
-	if (tmp) 
+	if (tmp)
 	{
 		const char *cbtx_hex = json_string_value(json_object_get(tmp, "data"));
 		cbtx_size = cbtx_hex ? strlen(cbtx_hex) / 2 : 0;
@@ -625,7 +638,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 			goto out;
 		}
 	}
-	else 
+	else
 	{
 		int64_t cbvalue;
 		if (!pk_script_size) {
@@ -666,7 +679,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 		memcpy(cbtx+cbtx_size, pk_script, pk_script_size);
 		cbtx_size += pk_script_size;
 
-		if (segwit) 
+		if (segwit)
 		{
 			printf("\nUSING SEGWIT!");
 
@@ -708,7 +721,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 		cbtx_size += 4;
 		coinbase_append = true;
 	}
-	if (coinbase_append) 
+	if (coinbase_append)
 	{
 		printf("\nAPPENDING COINBASE TX");
 		unsigned char xsig[100];
@@ -740,7 +753,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 				iter = json_object_iter_next(tmp, iter);
 			}
 		}
-		if (xsig_len) 
+		if (xsig_len)
 		{
 			printf("\n APPENDING SIGNATURE ");
 			unsigned char *ssig_end = cbtx + 42 + cbtx[41];
@@ -761,7 +774,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	// BIBLEPAY - Add an additional byte to the end of the coinbase transaction
 	cbtx[cbtx_size++] = 0;
 	// End of BiblePay
-	
+
 	n = varint_encode(txc_vi, 1 + tx_count);
 	work->txs = malloc(2 * (n + cbtx_size + tx_size) + 1);
 	bin2hex(work->txs, txc_vi, n);
@@ -770,7 +783,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	/* generate merkle root */
 	merkle_tree = malloc(32 * ((1 + tx_count + 1) & ~1));
 	sha256d(merkle_tree[0], cbtx, cbtx_size);
-	for (i = 0; i < tx_count; i++) 
+	for (i = 0; i < tx_count; i++)
 	{
 		tmp = json_array_get(txa, i);
 		const char *tx_hex = json_string_value(json_object_get(tmp, "data"));
@@ -813,7 +826,7 @@ static bool gbt_work_decode(const json_t *val, struct work *work)
 	// Write the merkle root
 	for (i = 0; i < 8; i++)
 		work->data[9 + i] = be32dec((uint32_t *)merkle_tree[0] + i);
-	
+
 	work->data[17] = swab32(curtime);
 	work->data[18] = le32dec(&bits);
 	memset(work->data + 19, 0x00, 52);
@@ -882,6 +895,15 @@ static void share_result(int result, const char *reason)
 		applog(LOG_DEBUG, "DEBUG2: reject reason: %s", reason);
 }
 
+static void restart_threads(void)
+{
+	int i;
+
+	for (i = 0; i < opt_n_threads; i++)
+		work_restart[i].restart = 1;
+}
+
+
 static bool LiteTest(uint32_t a1[8], uint32_t a2[8])
 {
 	for (int z = 0; z < 8; z++)
@@ -903,13 +925,13 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 
 	/* pass if the previous hash is not the current previous hash */
 	if (!submit_old && memcmp(work->data + 1, g_work.data + 1, 32)) {
-	
+
 		if (opt_debug)
 			applog(LOG_DEBUG, "*** DEBUG: stale work detected, discarding");
 		return true;
 	}
 
-	if (have_stratum) 
+	if (have_stratum)
 	{
 		uint32_t ntime, nonce;
 		char ntimestr[9], noncestr[9], *xnonce2str, *req;
@@ -942,7 +964,7 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		// Little endian:
 		for (i = 0; i < ARRAY_SIZE(work->data); i++)
 			le32enc(work->data + i, work->data[i]);
-		
+
 		if (strlen(work->block) < 160)
 		{
 			printf("\nmissing data %s\n ", work->block);
@@ -953,7 +975,7 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		char mySubmission[strlen(work->block) + 128];
 
 		memset(mySubmission, 0, sizeof mySubmission);
-		
+
 		for (i = 0; i < strlen(work->block); i++)
 		{
 			mySubmission[i] = work->block[i];
@@ -989,13 +1011,13 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 			last_submitted_hash[k] = hash[k];
 
 	}
-	else if (work->txs) 
+	else if (work->txs)
 	{
 		char *req;
 
 		for (i = 0; i < ARRAY_SIZE(work->data); i++)
 			be32enc(work->data + i, work->data[i]);
-    	
+
 		bin2hex(data_str, (unsigned char *)work->data, 80);
 		if (work->workid) {
 			char *params;
@@ -1014,17 +1036,17 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 				"{\"method\": \"submitblock\", \"params\": [\"%s%s\"], \"id\":1}\r\n",
 				data_str, work->txs);
 		}
-		
+
 		val = json_rpc_call(curl, rpc_url, rpc_userpass, req, NULL, 0);
 		free(req);
-		
+
 		if (unlikely(!val)) {
 			applog(LOG_ERR, "submit_upstream_work json_rpc_call failed");
 			goto out;
 		}
 
 		res = json_object_get(val, "result");
-		if (json_is_object(res)) 
+		if (json_is_object(res))
 		{
 			char *res_str;
 			bool sumres = false;
@@ -1046,17 +1068,17 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 
 		json_decref(val);
 	}
-	else 
+	else
 	{
 		// This area handles submission of solo mined blocks with or without ABN's using 'submitblock'
 		/* build hex string */
 		//First insert the entire block as it came to us
 		for (i = 0; i < ARRAY_SIZE(work->data); i++)
 			le32enc(work->data + i, work->data[i]);
-	
+
 		char data_str2[strlen(work->block) + 128];
 		memset(data_str2, 0, sizeof data_str2);
-	
+
 		for (i = 0; i < strlen(work->block); i++)
 		{
 			data_str2[i] = work->block[i];
@@ -1077,22 +1099,22 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 		sprintf(req,
 				"{\"method\": \"submitblock\", \"params\": [\"%s\"], \"id\":1}\r\n",
 				data_str2);
-				
+
 		/* issue JSON-RPC request */
 		printf("\n\nSUBMITTING RPC1 [%s]\n", req);
 
 		val = json_rpc_call(curl, rpc_url, rpc_userpass, req, NULL, 0);
-		
+
 		if (unlikely(!val)) {
 			applog(LOG_ERR, "submit_upstream_work(solominer) json_rpc_call failed");
 			goto out;
 		}
 
 		res = json_object_get(val, "result");
-		
+
 		free(req);
 
-		if (json_is_object(res)) 
+		if (json_is_object(res))
 		{
 			char *res_str;
 			bool sumres = false;
@@ -1106,15 +1128,16 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 			}
 			res_str = json_dumps(res, 0);
 			printf("\nSUBMIT_BLOCK RESULT %s", res_str);
-
 			share_result(sumres, res_str);
 			free(res_str);
 		} else
 		{
 			share_result(json_is_null(res), json_string_value(res));
 		}
-		
+
 		json_decref(val);
+		restart_threads();
+
 	}
 
 	rc = true;
@@ -1126,7 +1149,7 @@ out:
 static const char *getwork_req =
 	"{\"method\": \"getwork\", \"params\": [], \"id\":0}\r\n";
 
-static const char *getwork_req_bbp = 
+static const char *getwork_req_bbp =
 	"{\"method\": \"getblockforstratum\", \"params\": [], \"id\":0}\r\n";
 
 
@@ -1146,7 +1169,7 @@ static bool get_upstream_work(CURL *curl, struct work *work)
 	int err;
 	bool rc;
 	struct timeval tv_start, tv_end, diff;
-	 		  
+
 start:
 	gettimeofday(&tv_start, NULL);
 	val = json_rpc_call(curl, rpc_url, rpc_userpass,
@@ -1177,7 +1200,7 @@ start:
 		return false;
 
 
-	if (have_gbt && fSolo) 
+	if (have_gbt && fSolo)
 	{
 		rc = work_decode2(json_object_get(val, "result"), work);
 		if (!have_gbt) {
@@ -1225,9 +1248,9 @@ static bool workio_get_work(struct workio_cmd *wc, CURL *curl)
 	if (!ret_work)
 		return false;
 
-	while (!get_upstream_work(curl, ret_work)) 
+	while (!get_upstream_work(curl, ret_work))
 	{
-		if (unlikely((opt_retries >= 0) && (++failures > opt_retries))) 
+		if (unlikely((opt_retries >= 0) && (++failures > opt_retries)))
 		{
 			printf("Optional retries exceeded; terminating workio thread");
 			applog(LOG_ERR, "json_rpc_call failed, terminating workio thread");
@@ -1475,25 +1498,26 @@ static void *miner_thread(void *userdata)
 	while (1) {
 		unsigned long hashes_done;
 		struct timeval tv_start, tv_end, diff;
+
 		int64_t max64;
 		int rc;
 
-		if (have_stratum) 
+		if (have_stratum)
 		{
-		
+
 			while (time(NULL) >= g_work_time + 120)
 				sleep(1);
 			pthread_mutex_lock(&g_work_lock);
 			if (work.data[19] >= end_nonce && !memcmp(work.data, g_work.data, 76))
 				stratum_gen_work2(&stratum, &g_work);
-		} 
-		else 
+		}
+		else
 		{
 			int min_scantime = have_longpoll ? LP_SCANTIME : opt_scantime;
 			/* obtain new work from internal workio thread */
 			pthread_mutex_lock(&g_work_lock);
 			if (!have_stratum && fSolo && (time(NULL) - g_work_time >= min_scantime ||
-			     work.data[19] >= end_nonce)) 
+			     work.data[19] >= end_nonce))
 			{
 				work_free(&g_work);
 				if (unlikely(!get_work(mythr, &g_work))) {
@@ -1547,10 +1571,10 @@ static void *miner_thread(void *userdata)
 		gettimeofday(&tv_start, NULL);
 
 		/* scan nonces for a proof-of-work hash */
-		switch (opt_algo) 
+		switch (opt_algo)
 		{
 		  case ALGO_SCRYPT:
-			printf("Not using POBH  using scrypt.  %d", 1);
+			printf("Not using POBH - using scrypt.  %d", 1);
 			rc = scanhash_scrypt(thr_id, work.data, scratchbuf, work.target,
 			                     max_nonce, &hashes_done, opt_scrypt_n);
 			break;
@@ -1560,7 +1584,7 @@ static void *miner_thread(void *userdata)
 			                      max_nonce, &hashes_done);
 			break;
 		  case ALGO_POBH:
-			rc = scanhash_pobh2(thr_id, work.data, work.target, max_nonce, &hashes_done);
+			rc = scanhash_pobh2(thr_id, work.data, work.target, max_nonce, &hashes_done, work.nPrevBlockTime);
 			break;
 		  default:
 			/* should never happen */
@@ -1579,8 +1603,12 @@ static void *miner_thread(void *userdata)
 		if (!opt_quiet) {
 			sprintf(s, thr_hashrates[thr_id] >= 1e6 ? "%.0f" : "%.2f",
 				1e-3 * thr_hashrates[thr_id]);
-			applog(LOG_INFO, "thread %d: %lu hashes, %s khash/s",
-				thr_id, hashes_done, s);
+			bool fShow = diff.tv_sec > 0 || (diff.tv_usec % 1000 == 1);
+			if (fShow)
+			{
+				applog(LOG_INFO, "thread %d: %lu hashes, %s khash/s, secs %d",
+					thr_id, hashes_done, s, diff.tv_sec);
+			}
 		}
 		if (opt_benchmark && thr_id == opt_n_threads - 1) {
 			double hashrate = 0.;
@@ -1604,7 +1632,7 @@ static void *miner_thread(void *userdata)
 			bool fSubmitted = submit_work(mythr, &work);
 			if (!fSubmitted)
 				break;
-			
+
 		}
 	}
 
@@ -1614,13 +1642,6 @@ out:
 	return NULL;
 }
 
-static void restart_threads(void)
-{
-	int i;
-
-	for (i = 0; i < opt_n_threads; i++)
-		work_restart[i].restart = 1;
-}
 
 static void *longpoll_thread(void *userdata)
 {
@@ -1788,7 +1809,7 @@ static void *stratum_thread(void *userdata)
 			}
 		}
 
-		if (stratum.job.job_id && 
+		if (stratum.job.job_id &&
 		    (!g_work_time || strcmp(stratum.job.job_id, g_work.job_id))) {
 			pthread_mutex_lock(&g_work_lock);
 			stratum_gen_work2(&stratum, &g_work);
@@ -2033,7 +2054,7 @@ static void parse_arg(int key, char *arg, char *pname)
 			*hp++ = '@';
 		} else
 			hp = ap;
-		if (ap != arg) 
+		if (ap != arg)
 		{
 			if (strncasecmp(arg, "http://", 7) &&
 			    strncasecmp(arg, "https://", 8) &&
@@ -2081,7 +2102,7 @@ static void parse_arg(int key, char *arg, char *pname)
 		break;
 	case 'x':;			/* --proxy */
 		// BBP
-		// 
+		//
 		printf("Using bbpminer version %d", BBP_VERSION);
 
 		test_suite();
@@ -2157,7 +2178,7 @@ static void parse_arg(int key, char *arg, char *pname)
 		show_version_and_exit();
 	case 'h':
 		show_usage_and_exit(0);
-	default: 
+	default:
 		show_usage_and_exit(1);
 	}
 }
@@ -2244,7 +2265,7 @@ int main(int argc, char *argv[])
 	long flags;
 	int i;
 	fDebug = false;
-	
+
 	rpc_user = strdup("");
 	rpc_pass = strdup("");
 	initkjv();

@@ -126,7 +126,7 @@ void printme2(char *caption, uint32_t bufhash[])
 {
 	uint32_t hash_be[8];
 	char hash_str[65], target_str[65];
-	for (int i = 0; i < 8; i++) 
+	for (int i = 0; i < 8; i++)
 	{
 	    be32enc(hash_be + i, bufhash[7 - i]);
 	}
@@ -136,7 +136,7 @@ void printme2(char *caption, uint32_t bufhash[])
 
 static void becencode(uint32_t bufhash[], uint32_t bechash[])
 {
-	for (int i = 0; i < 8; i++) 
+	for (int i = 0; i < 8; i++)
 	{
 		be32enc(bechash + i, bufhash[7 - i]);
 	}
@@ -149,17 +149,47 @@ void printme(char *caption, uint32_t bufhash[])
 	printf("\n %s ---  HASH [%s]\n ", caption, sha_str);
 }
 
+bool CheckNonce(int nNonce, int nPrevBlockTime, int nBlockTime)
+{
+	int MAX_AGE = 30 * 60;
+	int NONCE_FACTOR = 256;
+	int MAX_NONCE = 512;
+	int nElapsed = nBlockTime - nPrevBlockTime;
+	if (false)
+	{
+		if (nNonce % 10000 == 0)
+			printf("      Elapsed %d %d %d %d       ", nPrevBlockTime, nBlockTime, nElapsed, nNonce);
+	}
+    if (nPrevBlockTime == 0 || nBlockTime == 0)
+    {
+		printf(" Invalid block time %d, %d ", nPrevBlockTime, nBlockTime);
+		return false;
+	}
+	if (nElapsed > MAX_AGE)
+	{
+		return true;
+	}
+	int nMaxNonce = nElapsed * NONCE_FACTOR;
+	if (nMaxNonce < MAX_NONCE)
+	{
+		nMaxNonce = MAX_NONCE;
+	}
+	return (nNonce > nMaxNonce) ? false : true;
+}
 
 #ifndef EXTERN_POBH2
-int scanhash_pobh2(int thr_id, uint32_t *pdata, const uint32_t *ptarget, uint32_t max_nonce, unsigned long *hashes_done)
+int scanhash_pobh2(int thr_id, uint32_t *pdata, const uint32_t *ptarget, uint32_t max_nonce, unsigned long *hashes_done, int nPrevBlockTime)
 {
 	uint32_t hash[8] __attribute__((aligned(128)));
 	uint32_t endiandata[20] __attribute__((aligned(128)));
-	const uint32_t first_nonce = pdata[19];
+	// const uint32_t first_nonce = pdata[19];
+	// In POBH, first nonce has to be 0:
+	const uint32_t first_nonce = 0;
 	const uint32_t starttime = pdata[17] + thr_id;
 	le32enc(&pdata[17], starttime);
 	uint32_t nonce = first_nonce;
     bool fLate = false;
+	bool fNonceOK = true;
  	uint8_t pobhhash[32] = {0x0};
 	uint8_t pobhhash2[32] = {0x0};
 	uint32_t finalhash[8] __attribute__((aligned(32)));
@@ -167,29 +197,35 @@ int scanhash_pobh2(int thr_id, uint32_t *pdata, const uint32_t *ptarget, uint32_
 	for (int k=0; k < 20; k++)
 		endiandata[k] = pdata[k];
 
-	do 
+	do
 	{
-    	be32enc(&endiandata[19], nonce);
+    	//be32enc(&endiandata[19], nonce);
+    	le32enc(&endiandata[19], nonce);
+
 		x11hash(hash, endiandata);
 		becencode(hash, hash_be);
 		ConvertH32TO8(hash_be, pobhhash);
 		BibleHashV2(pobhhash, fLate);
 	    R256b(pobhhash, pobhhash2);
 		ConvertH8TO32(pobhhash2, finalhash);
-		
-		if (fulltest(finalhash, ptarget)) 
+		fNonceOK = CheckNonce(nonce, nPrevBlockTime, starttime);
+
+		if (fNonceOK && fulltest(finalhash, ptarget))
 		{
-			be32enc(&pdata[19], nonce);
+			//be32enc(&pdata[19], nonce);
+			le32enc(&pdata[19], nonce);
+
 			if (opt_debug)
 			{
 				printme2("\n SOLUTION FOUND !!!! \nx11", hash);
 				printme2("bbphash\n", finalhash);
 			}
-			*hashes_done = pdata[19] - first_nonce;
+			*hashes_done = nonce - first_nonce;
 			return 1;
 		}
 		nonce++;
-	} while (nonce < max_nonce && !work_restart[thr_id].restart);
+
+	} while (fNonceOK && nonce < max_nonce && !work_restart[thr_id].restart);
 
 	pdata[19] = nonce;
 	*hashes_done = pdata[19] - first_nonce + 1;
